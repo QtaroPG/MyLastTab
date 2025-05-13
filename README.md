@@ -10,14 +10,15 @@ Chrome
 2. Find “Last‑Two‑Tabs Switcher” (or whatever you named your extension).	
 3. Click in the empty box next to “Switch to the previously active tab”.
 4. Press the key combo you want (e.g. Ctrl + Q).
-5. It appears in the box—done.	5. You’re done.
+5. It appears in the box—done.	
 
 Edge
 1. Type edge://extensions/shortcuts and press Enter.
 2. Find your extension in the list.
 3. Click the box next to the command (e.g. Ctrl + Q).
 4. Press the desired key combo.
-
+5. You’re done.
+   
 Tip:
 Some shortcuts are reserved by the browser or the OS (e.g. Ctrl+W closes a tab, Cmd+Q quits on macOS). If the key you pick is blocked, Chrome/Edge won’t accept it—try a different combination such as Alt + Q or Ctrl + Shift + Q.
 
