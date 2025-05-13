@@ -1,73 +1,102 @@
-// background.js – remembers the last two active tabs and toggles with Ctrl + Q
-// Manifest V3 service‑worker safe
+// background.js  – per‑window “last‑two‑tabs” switcher  (Manifest v3 / service‑worker)
 
-const STORE_KEYS = ["currentTabId", "previousTabId"];
+const HISTORY_KEY = "tabHistory";       // object mapping windowId → {current, previous}
 
-/**
- * Promote the old current tab to “previous” *only* if we really switched.
- */
-function setCurrentTab(newCurrentId) {
-  chrome.storage.local.get(STORE_KEYS, (data) => {
-    const { currentTabId, previousTabId } = data;
+/* ---------- helpers ---------------------------------------------------- */
 
-    if (newCurrentId === currentTabId) return; // nothing to do
+function withHistory(cb) {
+  chrome.storage.local.get([HISTORY_KEY], (data) =>
+    cb(data[HISTORY_KEY] || {})
+  );
+}
 
-    chrome.storage.local.set({
-      currentTabId: newCurrentId,
-      previousTabId: currentTabId ?? previousTabId ?? null,
-    });
+/** Save modified history back to storage. */
+function saveHistory(history) {
+  chrome.storage.local.set({ [HISTORY_KEY]: history });
+}
+
+/** Update one window’s {current, previous}. */
+function setCurrentTab(windowId, newCurrentId) {
+  withHistory((history) => {
+    const h = history[windowId] || { current: null, previous: null };
+    if (newCurrentId === h.current) return;        // no real change
+
+    h.previous = h.current;
+    h.current  = newCurrentId;
+    history[windowId] = h;
+    saveHistory(history);
   });
 }
 
-/** Update IDs whenever the user activates a tab. */
-chrome.tabs.onActivated.addListener(({ tabId }) => setCurrentTab(tabId));
+/* ---------- event listeners ------------------------------------------- */
 
-/** Clean up if a stored tab gets closed. */
-chrome.tabs.onRemoved.addListener((closedId) => {
-  chrome.storage.local.get(STORE_KEYS, ({ currentTabId, previousTabId }) => {
-    if (closedId === currentTabId) {
-      // Promote whatever is now active (might be null if the window closed)
-      chrome.tabs.query({ active: true, currentWindow: true }, ([active]) =>
-        setCurrentTab(active ? active.id : null)
-      );
-    } else if (closedId === previousTabId) {
-      chrome.storage.local.set({ previousTabId: null });
+// 1) User activates a tab
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
+  setCurrentTab(windowId, tabId)
+);
+
+// 2) A tab is closed – clean up that window’s record if needed
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  const { windowId } = removeInfo;
+  withHistory((history) => {
+    const h = history[windowId];
+    if (!h) return;
+
+    if (tabId === h.current) {
+      h.current = null;                           // onActivated will soon set a new one
+    } else if (tabId === h.previous) {
+      h.previous = null;
     }
+    history[windowId] = h;
+    saveHistory(history);
   });
 });
 
-/** Ctrl + Q → go to previous tab, then swap the IDs so you can bounce back. */
+// 3) Ctrl + Q (or whatever key) → switch within the *current* window
 chrome.commands.onCommand.addListener((cmd) => {
   if (cmd !== "switch-to-previous-tab") return;
 
-  chrome.storage.local.get(STORE_KEYS, ({ currentTabId, previousTabId }) => {
-    if (!previousTabId || previousTabId === currentTabId) return;
+  chrome.tabs.query({ active: true, currentWindow: true }, ([active]) => {
+    if (!active) return;
+    const windowId = active.windowId;
 
-    chrome.tabs.get(previousTabId, (tab) => {
-      if (chrome.runtime.lastError || !tab) {
-        chrome.storage.local.set({ previousTabId: null });
-        return;
-      }
+    withHistory((history) => {
+      const h = history[windowId] || {};
+      const { current, previous } = h;
+      if (!previous || previous === current) return;
 
-      chrome.tabs.update(previousTabId, { active: true }, () => {
-        chrome.storage.local.set({
-          currentTabId: previousTabId,
-          previousTabId: currentTabId,
+      chrome.tabs.get(previous, (tab) => {
+        if (chrome.runtime.lastError || !tab) {
+          h.previous = null;              // tab was closed – forget it
+          history[windowId] = h;
+          saveHistory(history);
+          return;
+        }
+
+        chrome.tabs.update(previous, { active: true }, () => {
+          // swap so you can bounce back
+          h.current  = previous;
+          h.previous = current;
+          history[windowId] = h;
+          saveHistory(history);
         });
       });
     });
   });
 });
 
-/** Seed storage when the service‑worker (re)starts. */
-chrome.runtime.onStartup.addListener(initState);
-chrome.runtime.onInstalled.addListener(initState);
+/* ---------- initialise on service‑worker (re)start --------------------- */
 
-function initState() {
-  chrome.tabs.query({ active: true, currentWindow: true }, ([active]) => {
-    chrome.storage.local.set({
-      currentTabId: active ? active.id : null,
-      previousTabId: null,
+function initHistory() {
+  chrome.windows.getAll({ populate: true, windowTypes: ["normal"] }, (wins) => {
+    const history = {};
+    wins.forEach((w) => {
+      const active = w.tabs.find((t) => t.active);
+      history[w.id] = { current: active ? active.id : null, previous: null };
     });
+    saveHistory(history);
   });
 }
+
+chrome.runtime.onStartup.addListener(initHistory);
+chrome.runtime.onInstalled.addListener(initHistory);
